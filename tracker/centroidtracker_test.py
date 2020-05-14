@@ -18,10 +18,10 @@ class CentroidTracker():
 		# need to deregister the object from tracking
 		self.maxDisappeared = maxDisappeared
 
-	def register(self, centroid):
+	def register(self, rect):
 		# when registering an object we use the next available object
 		# ID to store the centroid
-		self.objects[self.nextObjectID] = centroid
+		self.objects[self.nextObjectID] = rect
 		self.disappeared[self.nextObjectID] = 0
 		self.nextObjectID += 1
 
@@ -64,7 +64,7 @@ class CentroidTracker():
 		# centroids and register each of them
 		if len(self.objects) == 0:
 			for i in range(0, len(inputCentroids)):
-				self.register(inputCentroids[i])
+				self.register(rects[i])
 
 		# otherwise, are are currently tracking objects so we need to
 		# try to match the input centroids to existing object
@@ -72,7 +72,13 @@ class CentroidTracker():
 		else:
 			# grab the set of object IDs and corresponding centroids
 			objectIDs = list(self.objects.keys())
-			objectCentroids = list(self.objects.values())
+			# objectCentroids = list(self.objects.values())
+			objectCentroids =[]
+			for i, (startX, startY, endX, endY) in enumerate(list(self.objects.values())):
+				# use the bounding box coordinates to derive the centroid
+				cX = int((startX + endX) / 2.0)
+				cY = int((startY + endY) / 2.0)
+				objectCentroids.append((cX, cY))
 
 			# compute the distance between each pair of object
 			# centroids and input centroids, respectively -- our
@@ -111,7 +117,7 @@ class CentroidTracker():
 				# set its new centroid, and reset the disappeared
 				# counter
 				objectID = objectIDs[row]
-				self.objects[objectID] = inputCentroids[col]
+				self.objects[objectID] = rects[col]
 				self.disappeared[objectID] = 0
 
 				# indicate that we have examined each of the row and
@@ -147,8 +153,8 @@ class CentroidTracker():
 			# register each new input centroid as a trackable object
 			else:
 				for col in unusedCols:
-					self.register(inputCentroids[col])
-					print("Reg 2")
+					self.register(rects[col])
+
 
 		# return the set of trackable objects
 		return self.objects
