@@ -1,17 +1,15 @@
 import cv2
 import dlib
-import numpy as np
 from imutils import face_utils
 import tensorflow as tf
 import pickle
-import onnx
-import onnxruntime as ort
-from onnx_tf.backend import prepare
 from tracker.centroidtracker_test import CentroidTracker
-from helpers.tools import area_of, predict, showtoscreen, most_common, globalClass, preprocess, check_area, face_finder, \
+from helpers.tools import predict, showtoscreen, globalClass, preprocess, check_area, face_finder, \
     face_match
 from collections import defaultdict
-
+# from memory_profiler import profile
+from extractor_logging import setup_logging
+logger = setup_logging()
 
 shape_predictor_al = dlib.shape_predictor('models/facial_landmarks/shape_predictor_5_face_landmarks.dat')
 # shape_predictor = dlib.shape_predictor('models/facial_landmarks/shape_predictor_68_face_landmarks.dat')
@@ -51,19 +49,20 @@ def load_models(tf, sess):
     return images_placeholder, embeddings, phase_train_placeholder
 
 
+# def run():
 with tf.Graph().as_default():
     with tf.Session() as sess:
 
         globalClass.load_models(sess)
 
-        video_capture = cv2.VideoCapture(0)
+        video_capture = cv2.VideoCapture('/dev/video1')
         # video_capture = cv2.VideoCapture('/dev/video1')
         globalClass.box_face = defaultdict(lambda: defaultdict(int))
         while True:
             fps = video_capture.get(cv2.CAP_PROP_FPS)
             ret, frame = video_capture.read()
             # frame = cv2.imread("/home/ravirajprajapat/Desktop/11.jpg")
-            if globalClass.processframe % 1 == 0:
+            if globalClass.processframe % 1 == 0 and ret:
                 # preprocess faces
                 img, h, w = preprocess(frame)
 
@@ -73,11 +72,11 @@ with tf.Graph().as_default():
 
                 predboxes[predboxes < 0] = 0  # [[297 116 519 401]]
 
-                # boxes = check_area(predboxes)
+                boxes = check_area(predboxes)
                 boxes = predboxes
 
                 objects = ct.update(boxes)  # OrderedDict([(0, array([227, 123])), (1, array([361, 219]))])
-                print(f"Detected total {len(predboxes)} boxes and Objects are {objects}")
+                logger.info(f"Detected total {len(predboxes)} boxes and Objects are {objects}")
 
                 # Track the obj ID with box
                 for i, j in objects.items():
@@ -91,17 +90,17 @@ with tf.Graph().as_default():
                     if i not in objects.keys():
                         del globalClass.box_face[i]
 
-                print(boxes, objects.items())
-                print(f"number of objects  coming : {len(objects)} while boxes sent are : {boxes.shape} ")
+                logger.info(boxes, objects.items())
+                logger.info(f"number of objects  coming : {len(objects)} while boxes sent are : {boxes.shape} ")
 
-                face_dict = face_finder(globalClass, frame,fa)
+                face_dict = face_finder(globalClass, frame, fa,logger)
 
-
+                # face_dict = {} #Only if you want to disable the Recognition
                 # face embedding
                 if len(face_dict) > 0:
-                    face_match(face_dict,globalClass,sess,saved_embeds,names)
+                    face_match(face_dict, globalClass, sess, saved_embeds, names,logger)
 
-                showtoscreen(globalClass.box_face, frame)
+                showtoscreen(globalClass.box_face, frame,logger)
 
             globalClass.processframe += 1
             cv2.imshow('Video', frame)
@@ -113,3 +112,6 @@ with tf.Graph().as_default():
 # Release handle to the webcam
 video_capture.release()
 cv2.destroyAllWindows()
+
+
+# run()

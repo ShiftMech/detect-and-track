@@ -7,6 +7,9 @@ import onnx
 import onnxruntime as ort
 from onnx_tf.backend import prepare
 import tensorflow as tf
+from memory_profiler import profile
+from extractor_logging import setup_logging
+
 
 def area_of(left_top, right_bottom):
     """
@@ -73,6 +76,7 @@ def hard_nms(box_scores, iou_threshold, top_k=-1, candidate_size=200):
 
     return box_scores[picked, :]
 
+
 def predict(width, height, confidences, boxes, prob_threshold, iou_threshold=0.5, top_k=-1):
     """
     Select boxes that contain human faces
@@ -101,9 +105,9 @@ def predict(width, height, confidences, boxes, prob_threshold, iou_threshold=0.5
         subset_boxes = boxes[mask, :]
         box_probs = np.concatenate([subset_boxes, probs.reshape(-1, 1)], axis=1)
         box_probs = hard_nms(box_probs,
-           iou_threshold=iou_threshold,
-           top_k=top_k,
-           )
+                             iou_threshold=iou_threshold,
+                             top_k=top_k,
+                             )
         picked_box_probs.append(box_probs)
         picked_labels.extend([class_index] * box_probs.shape[0])
     if not picked_box_probs:
@@ -115,15 +119,18 @@ def predict(width, height, confidences, boxes, prob_threshold, iou_threshold=0.5
     picked_box_probs[:, 3] *= height
     return picked_box_probs[:, :4].astype(np.int32), np.array(picked_labels), picked_box_probs[:, 4]
 
-def showtoscreen(box_face,frame):
+
+def showtoscreen(box_face, frame, logging):
+    total_people = {}
     for id in list(box_face.keys()):
         box = box_face[id].get("box")
         if box and len(box_face[id].get("names")) > 0:
-            print(f"Found names for {id} : {box_face[id].get('names')}")
+            logging.info(f"Found names for {id} : {box_face[id].get('names')}")
             text = most_common(box_face[id].get("names"))
         else:
             text = "unknown"
-        print(f"Naming {text} for id {id}")
+        total_people[id] = text
+        logging.info(f"Naming {text} for id {id}")
 
         x1, y1, x2, y2 = box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 18, 236), 2)
@@ -133,13 +140,25 @@ def showtoscreen(box_face,frame):
         cv2.putText(frame, text, (x1 + 6, y2 - 6), font, 1.8, (255, 255, 255), 1)
         cv2.putText(frame, str(id), (x1 + 56, y2 - 6), font, 1.8, (255, 241, 3), 2)
 
+        # stats
+        text1 = f"Total Number of people: {len(total_people)}"
+        people_names = str(list(total_people.values())).replace("[", "").replace("]", "")
+        text2 = f"Names of people: {people_names}"
+        cv2.rectangle(frame, (0, 0), (350, 100), (80, 18, 236), 2)
+        cv2.putText(frame, text1, (2, 12), cv2.FONT_HERSHEY_PLAIN, 1, (88, 255, 5), 1)
+        cv2.putText(frame, text2, (2, 25), cv2.FONT_HERSHEY_PLAIN, 1, (88, 255, 5), 1)
+
 
 def most_common(lst):
-    return max(set(lst), key=lst.count)
+    if len(lst) > 0:
+        return max(set(lst), key=lst.count)
+    else:
+        return None
 
 
 class globalClass:
     """Class, object of  which holds globally required variables"""
+
     def __init__(self):
         self.box_face = defaultdict(lambda: defaultdict(int))
         onnx_path = 'models/ultra_light/ultra_light_models/ultra_light_640.onnx'
@@ -150,10 +169,10 @@ class globalClass:
         self.processframe = 0
         self.threshold = 0.63
 
-        self.images_placeholder= None
+        self.images_placeholder = None
         self.embeddings = None
-        self.phase_train_placeholder=None
-        self.embedding_size=None
+        self.phase_train_placeholder = None
+        self.embedding_size = None
 
     def load_models(self, sess):
         saver = tf.train.import_meta_graph('models/mfn/m1/mfn.ckpt.meta')
@@ -177,26 +196,27 @@ def preprocess(frame):
     img = img.astype(np.float32)
     return img, h, w
 
+
 def check_area(predboxes):
     boxes = []
     for i in range(predboxes.shape[0]):
         predbox = predboxes[i, :]
         x1, y1, x2, y2 = predbox
         predbox_area = area_of(np.array([[x1, y1]]), np.array([[x2, y2]]))
-        if predbox_area > 5000:
+        if predbox_area > 5001:
             boxes.append(predbox)
     return np.array(boxes)
 
 
-def face_finder(globalClass,frame,fa):
+def face_finder(globalClass, frame, fa, logging):
     face_dict = {}
     for id in list(globalClass.box_face.keys()):
         found = globalClass.box_face[id].get("found")
         box = globalClass.box_face[id].get("box")
-        print(f"for {id} found {found} and box is {box}")
+        logging.info(f"for {id} found {found} and box is {box}")
         if found:
             count = globalClass.box_face[id].get("count")
-            print(f"Total count for {id} is {count}")
+            logging.info(f"Total count for {id} is {count}")
             if count is None or count < 30:
                 x1, y1, x2, y2 = box
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -207,33 +227,33 @@ def face_finder(globalClass,frame,fa):
                 aligned_face = aligned_face * 0.0078125
                 globalClass.box_face[id]["face"] = aligned_face
                 face_dict[id] = aligned_face
-                print(f"Aligned Face for id {id} is {len(aligned_face)}")
+                logging.info(f"Aligned Face for id {id} is {len(aligned_face)}")
                 if count is not None:
-                    print(f"Adding more for the count of ID : {id}")
+                    logging.info(f"Adding more for the count of ID : {id}")
                     globalClass.box_face[id]["count"] += 1
                 else:
-                    print(f"New Entrant with ID : {id}")
+                    logging.info(f"New Entrant with ID : {id}")
                     globalClass.box_face[id]["count"] = 1
                     globalClass.box_face[id]["names"] = []
             else:
                 fixname = most_common(globalClass.box_face[id].get("names"))
-                print(f"ID number {id} has achieved total count of {count} and Name is {fixname}")
+                logging.info(f"ID number {id} has achieved total count of {count} and Name is {fixname}")
     return face_dict
 
 
-def face_match(face_dict,globalClass,sess,saved_embeds,names):
-    print(f"Total Length of face dict is {len(face_dict)} with keys {len(face_dict.keys())}")
+def face_match(face_dict, globalClass, sess, saved_embeds, names, logging):
+    logging.info(f"Total Length of face dict is {len(face_dict)} with keys {len(face_dict.keys())}")
     # predictions = []
     faces = np.array(list(face_dict.values()))
     feed_dict = {globalClass.images_placeholder: faces, globalClass.phase_train_placeholder: False}
     embeds = sess.run(globalClass.embeddings, feed_dict=feed_dict)
-    print(f"Shape of face dict is {len(face_dict)} and embeds is {len(embeds)}")
+    logging.info(f"Shape of face dict is {len(face_dict)} and embeds is {len(embeds)}")
     for i, embedding in enumerate(embeds):
-        print(f"fetching embedding for ID: {list(face_dict.keys())[i]}")
+        logging.info(f"fetching embedding for ID: {list(face_dict.keys())[i]}")
         diff = np.subtract(saved_embeds, embedding)
         dist = np.sum(np.square(diff), 1)
         idx = np.argmin(dist)
-        # print(dist[idx], ":", names[idx])
+        # logging.info(dist[idx], ":", names[idx])
         if dist[idx] < globalClass.threshold:
             globalClass.box_face[list(face_dict.keys())[i]]["names"].append(names[idx])
         else:
