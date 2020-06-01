@@ -1,14 +1,10 @@
 import numpy as np
 import cv2
-from collections import defaultdict
-# from helpers.tools import most_common
 import dlib
-import onnx
-import onnxruntime as ort
-from onnx_tf.backend import prepare
-import tensorflow as tf
-from memory_profiler import profile
-from extractor_logging import setup_logging
+
+from imutils import face_utils
+
+from flask import current_app
 
 
 def area_of(left_top, right_bottom):
@@ -120,25 +116,38 @@ def predict(width, height, confidences, boxes, prob_threshold, iou_threshold=0.5
     return picked_box_probs[:, :4].astype(np.int32), np.array(picked_labels), picked_box_probs[:, 4]
 
 
-def showtoscreen(box_face, frame, logging):
+def showtoscreen(box_face, frame):
+    app = current_app._get_current_object()
+
     total_people = {}
     for id in list(box_face.keys()):
         box = box_face[id].get("box")
         if box and len(box_face[id].get("names")) > 0:
-            logging.info(f"Found names for {id} : {box_face[id].get('names')}")
-            text = most_common(box_face[id].get("names"))
+            app.logger.info(f"Found names for {id} : {box_face[id].get('names')}")
+            text = most_common(box_face[id].get('names'))
         else:
             text = "unknown"
+
+        text = f"Name of the Person : {text}"
+        movement = f"Laterally Moving Towards : {most_common(box_face[id].get('move'))}"
+        walk = f"Longitudinal Movment : {most_common(box_face[id].get('walk'))}"
+
+        area = area_of(np.array([[box_face[id]['box'][0], box_face[id]['box'][1]]]),
+                       np.array([[box_face[id]['box'][2], box_face[id]['box'][3]]]))[0]
+        dist = f"Ditance from Camera : {round(12774.13*area**(-0.5134785),1)} cms"
         total_people[id] = text
-        logging.info(f"Naming {text} for id {id}")
+        app.logger.info(f"Naming {text} for id {id}")
 
         x1, y1, x2, y2 = box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 18, 236), 2)
         # Draw a label with a name below the face
-        cv2.rectangle(frame, (x1, y2 - 20), (x2, y2), (80, 18, 236), cv2.FILLED)
-        font = cv2.FONT_HERSHEY_DUPLEX
-        cv2.putText(frame, text, (x1 + 6, y2 - 6), font, 1.8, (255, 255, 255), 1)
-        cv2.putText(frame, str(id), (x1 + 56, y2 - 6), font, 1.8, (255, 241, 3), 2)
+        # cv2.rectangle(frame, (x1, y2 - 20), (x2, y2), (80, 18, 236), cv2.FILLED)
+        font = cv2.FONT_HERSHEY_PLAIN
+        cv2.putText(frame, text, (x1, y2 + 32), font, 1, (255, 255, 255), 1)
+        cv2.putText(frame, f"ID of the Person : {str(id)}", (x1, y2 + 16), font, 1, (255, 241, 3), 1)
+        cv2.putText(frame, movement, (x1, y2 + 48), font, 1, (255, 241, 3), 1)
+        cv2.putText(frame, dist, (x1, y2 + 64), font, 1, (255, 241, 3), 1)
+        cv2.putText(frame, walk, (x1, y2 + 80), font, 1, (255, 241, 3), 1)
 
         # stats
         text1 = f"Total Number of people: {len(total_people)}"
@@ -156,32 +165,7 @@ def most_common(lst):
         return None
 
 
-class globalClass:
-    """Class, object of  which holds globally required variables"""
 
-    def __init__(self):
-        self.box_face = defaultdict(lambda: defaultdict(int))
-        onnx_path = 'models/ultra_light/ultra_light_models/ultra_light_640.onnx'
-        onnx_model = onnx.load(onnx_path)
-        self.predictor = prepare(onnx_model)
-        self.ort_session = ort.InferenceSession(onnx_path)
-        self.input_name = self.ort_session.get_inputs()[0].name
-        self.processframe = 0
-        self.threshold = 0.63
-
-        self.images_placeholder = None
-        self.embeddings = None
-        self.phase_train_placeholder = None
-        self.embedding_size = None
-
-    def load_models(self, sess):
-        saver = tf.train.import_meta_graph('models/mfn/m1/mfn.ckpt.meta')
-        saver.restore(sess, 'models/mfn/m1/mfn.ckpt')
-
-        self.images_placeholder = tf.get_default_graph().get_tensor_by_name("input:0")
-        self.embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
-        self.phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
-        self.embedding_size = self.embeddings.get_shape()[1]
 
 
 def preprocess(frame):
@@ -208,48 +192,50 @@ def check_area(predboxes):
     return np.array(boxes)
 
 
-def face_finder(globalClass, frame, fa, logging):
+def face_finder(globalClass, frame):
+    app = current_app._get_current_object()
     face_dict = {}
     for id in list(globalClass.box_face.keys()):
         found = globalClass.box_face[id].get("found")
         box = globalClass.box_face[id].get("box")
-        logging.info(f"for {id} found {found} and box is {box}")
+        app.logger.info(f"for {id} found {found} and box is {box}")
         if found:
             count = globalClass.box_face[id].get("count")
-            logging.info(f"Total count for {id} is {count}")
+            app.logger.info(f"Total count for {id} is {count}")
             if count is None or count < 30:
                 x1, y1, x2, y2 = box
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                aligned_face = fa.align(frame, gray, dlib.rectangle(left=x1, top=y1, right=x2, bottom=y2))
+                aligned_face = globalClass.fa.align(frame, gray, dlib.rectangle(left=x1, top=y1, right=x2, bottom=y2))
                 aligned_face = cv2.resize(aligned_face, (112, 112))
 
                 aligned_face = aligned_face - 127.5
                 aligned_face = aligned_face * 0.0078125
                 globalClass.box_face[id]["face"] = aligned_face
                 face_dict[id] = aligned_face
-                logging.info(f"Aligned Face for id {id} is {len(aligned_face)}")
+                app.logger.info(f"Aligned Face for id {id} is {len(aligned_face)}")
                 if count is not None:
-                    logging.info(f"Adding more for the count of ID : {id}")
+                    app.logger.info(f"Adding more for the count of ID : {id}")
                     globalClass.box_face[id]["count"] += 1
                 else:
-                    logging.info(f"New Entrant with ID : {id}")
+                    app.logger.info(f"New Entrant with ID : {id}")
                     globalClass.box_face[id]["count"] = 1
                     globalClass.box_face[id]["names"] = []
             else:
                 fixname = most_common(globalClass.box_face[id].get("names"))
-                logging.info(f"ID number {id} has achieved total count of {count} and Name is {fixname}")
+                app.logger.info(f"ID number {id} has achieved total count of {count} and Name is {fixname}")
     return face_dict
 
 
-def face_match(face_dict, globalClass, sess, saved_embeds, names, logging):
-    logging.info(f"Total Length of face dict is {len(face_dict)} with keys {len(face_dict.keys())}")
+def face_match(face_dict, globalClass, sess, saved_embeds, names):
+    app = current_app._get_current_object()
+    app.logger.info(f"Total Length of face dict is {len(face_dict)} with keys {len(face_dict.keys())}")
     # predictions = []
     faces = np.array(list(face_dict.values()))
     feed_dict = {globalClass.images_placeholder: faces, globalClass.phase_train_placeholder: False}
     embeds = sess.run(globalClass.embeddings, feed_dict=feed_dict)
-    logging.info(f"Shape of face dict is {len(face_dict)} and embeds is {len(embeds)}")
+    app.logger.info(f"Shape of face dict is {len(face_dict)} and embeds is {len(embeds)}")
     for i, embedding in enumerate(embeds):
-        logging.info(f"fetching embedding for ID: {list(face_dict.keys())[i]}")
+        app.logger.info(f"fetching embedding for ID: {list(face_dict.keys())[i]}")
         diff = np.subtract(saved_embeds, embedding)
         dist = np.sum(np.square(diff), 1)
         idx = np.argmin(dist)
@@ -258,3 +244,29 @@ def face_match(face_dict, globalClass, sess, saved_embeds, names, logging):
             globalClass.box_face[list(face_dict.keys())[i]]["names"].append(names[idx])
         else:
             globalClass.box_face[list(face_dict.keys())[i]]["names"].append("unknown")
+
+#
+# def load_models(tf, sess):
+#     saver = tf.train.import_meta_graph('models/mfn/m1/mfn.ckpt.meta')
+#     saver.restore(sess, 'models/mfn/m1/mfn.ckpt')
+#
+#     images_placeholder = tf.get_default_graph().get_tensor_by_name("input:0")
+#     embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
+#     phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
+#     embedding_size = embeddings.get_shape()[1]
+#     return images_placeholder, embeddings, phase_train_placeholder
+
+
+def face_points_68(frame, predboxes, shape_predictor):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    for (i, rect) in enumerate(predboxes):
+        left = rect[0]
+        top = rect[1]
+        right = rect[2]
+        bottom = rect[3]
+        dlibRect = dlib.rectangle(left, top, right, bottom)
+        shape = shape_predictor(gray, dlibRect)
+        shape = face_utils.shape_to_np(shape)
+        # Draw on our image, all the finded cordinate points (x,y)
+        for (x, y) in shape:
+            cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)
